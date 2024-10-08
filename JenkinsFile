@@ -1,0 +1,62 @@
+pipeline {
+    agent any
+    
+    environment {
+        // Define environment variables, e.g. DOCKER_REGISTRY
+    }
+
+    stages {
+        stage('Build') {
+            steps {
+                script {
+                    sh './scripts/build.sh'
+                }
+            }
+        }
+
+        stage('Test') {
+            steps {
+                script {
+                    sh './scripts/test.sh'
+                }
+            }
+        }
+
+        stage('Package') {
+            steps {
+                script {
+                    sh 'docker build -t myapp:latest .'
+                }
+            }
+        }
+
+        stage('Deploy to Staging') {
+            steps {
+                script {
+                    sh './scripts/deploy.sh staging'
+                }
+            }
+        }
+
+        stage('Approval') {
+            input {
+                message "Approve deployment to production?"
+                ok "Deploy!"
+            }
+        }
+
+        stage('Deploy to Production') {
+            steps {
+                script {
+                    sh './scripts/deploy.sh production'
+                }
+            }
+        }
+    }
+    
+    post {
+        always {
+            echo 'Cleaning up...'
+        }
+    }
+}
