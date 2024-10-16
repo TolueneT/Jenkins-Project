@@ -1,62 +1,131 @@
 pipeline {
     agent any
-    
+
+// ENVIRONMENT VARIABLES
     environment {
-        // Define environment variables, e.g. DOCKER_REGISTRY
+        NODE_ENV = 'development'
+        DOCKER_IMAGE = "my-node-app:${BUILD_NUMBER}"
+        DOCKER_REGISTRY = 'docker.io/myapp'
     }
 
+    options {
+        // Timeout the build after 30 minutes, fail fast if there are repeated failures
+        timeout(time: 30, unit: 'MINUTES')
+        retry(3)
+    }
+
+// STAGES
     stages {
-        stage('Build') {
+
+        // Step 1: Install Dependencies
+        stage('Install Dependencies') {
             steps {
                 script {
-                    sh './scripts/build.sh'
+                    echo 'Installing dependencies...'
+                }
+                // Use caching to speed up npm install
+                cache(path: 'node_modules', key: 'npm-cache-${BUILD_NUMBER}', fallback: true) {
+                    sh 'npm install'
                 }
             }
         }
 
-        stage('Test') {
-            steps {
-                script {
-                    sh './scripts/test.sh'
+        // Step 2: Run Tests (parallel with Lint)
+        stage('Run Tests') {
+            parallel {
+                stage('Unit Tests') {
+                    steps {
+                        script {
+                            echo 'Running unit tests...'
+                        }
+                        sh 'npm test'
+                    }
+                }
+                stage('Linting') {
+                    steps {
+                        script {
+                            echo 'Running code linting...'
+                        }
+                        sh 'npm run lint'
+                    }
                 }
             }
         }
 
-        stage('Package') {
+        // Step 3: Build and Package (Docker or traditional packaging)
+        stage('Build and Package') {
             steps {
                 script {
-                    sh 'docker build -t myapp:latest .'
+                    echo 'Building Docker image...'
+                    sh 'docker build -t ${DOCKER_IMAGE} .'
+                }
+                script {
+                    echo 'Pushing Docker image to registry...'
+                    sh "docker tag ${DOCKER_IMAGE} ${DOCKER_REGISTRY}:${BUILD_NUMBER}"
+                    sh "docker push ${DOCKER_REGISTRY}:${BUILD_NUMBER}"
                 }
             }
         }
 
+        // Step 4: Deploy to Staging
         stage('Deploy to Staging') {
+            environment {
+                NODE_ENV = 'staging'
+            }
             steps {
                 script {
-                    sh './scripts/deploy.sh staging'
+                    echo 'Deploying to staging...'
+                    sh "docker run -d -e NODE_ENV=staging -p 3000:3000 ${DOCKER_REGISTRY}:${BUILD_NUMBER}"
                 }
             }
         }
 
+        // Step 5: Manual Approval before Production Deployment
         stage('Approval') {
-            input {
-                message "Approve deployment to production?"
-                ok "Deploy!"
+            steps {
+                input message: 'Approve deployment to production?', ok: 'Deploy'
             }
         }
 
+        // Step 6: Deploy to Production
         stage('Deploy to Production') {
+            environment {
+                NODE_ENV = 'production'
+            }
             steps {
                 script {
-                    sh './scripts/deploy.sh production'
+                    echo 'Deploying to production...'
+                    sh "docker run -d -e NODE_ENV=production -p 80:3000 ${DOCKER_REGISTRY}:${BUILD_NUMBER}"
                 }
             }
         }
     }
-    
+
     post {
+        success {
+            echo 'Build and deployment succeeded!'
+            // Slack notification for success
+            slackSend(channel: '#build-notifications', message: "SUCCESS: Build #${BUILD_NUMBER} was successful!")
+        }
+
+        failure {
+            echo 'Build failed!'
+            // Slack notification for failure
+            slackSend(channel: '#build-notifications', message: "FAILED: Build #${BUILD_NUMBER} failed!")
+            
+            // Rollback to previous stable version in production
+            script {
+                echo 'Rolling back to the previous version...'
+                sh "docker run -d -e NODE_ENV=production -p 80:3000 ${DOCKER_REGISTRY}:previous-stable-version"
+            }
+        }
+
         always {
-            echo 'Cleaning up...'
+            // Clean up Docker images to prevent storage issues
+            script {
+                echo 'Cleaning up Docker images...'
+                sh 'docker system prune -f'
+            }
         }
     }
 }
