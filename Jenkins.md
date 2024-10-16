@@ -256,3 +256,5 @@ post {
 
 **always:** This block ensures that certain actions happen whether the build succeeds or fails.
 docker system prune -f: Cleans up unused Docker images and containers to save disk space.
+
+[Useful link](https://github.com/TolueneT/Jenkins-Project/blob/main/JenkinsFile)
