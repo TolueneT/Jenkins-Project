@@ -1,31 +1,31 @@
 pipeline {
     agent any
 
-// ENVIRONMENT VARIABLES
+    // ENVIRONMENT VARIABLES
     environment {
         NODE_ENV = 'development'
-        DOCKER_IMAGE = "my-node-app:${BUILD_NUMBER}"
+        DOCKER_IMAGE = "my-tito-app:${BUILD_NUMBER}"
+        REGISTRY_CREDENTIALS = credentials('docker-registry-credentials')  // Fetch credentials
         DOCKER_REGISTRY = 'docker.io/myapp'
     }
 
-    options {
-        // Timeout the build after 30 minutes, fail fast if there are repeated failures
-        timeout(time: 30, unit: 'MINUTES')
-        retry(3)
-    }
-
-// STAGES
+    // STAGES
     stages {
-
         // Step 1: Install Dependencies
         stage('Install Dependencies') {
             steps {
                 script {
-                    echo 'Installing dependencies...'
-                }
-                // Use caching to speed up npm install
-                cache(path: 'node_modules', key: 'npm-cache-${BUILD_NUMBER}', fallback: true) {
-                    sh 'npm install'
+                    try {
+                        echo 'Installing dependencies...'
+                        // Use caching to speed up npm install
+                        cache(path: 'node_modules', key: 'npm-cache-${BUILD_NUMBER}', fallback: true) {
+                            sh 'npm install'
+                        }
+                    } catch (err) {
+                        echo 'Error installing dependencies!'
+                        currentBuild.result = 'FAILURE' // Mark the build as failed
+                        error "Aborting build due to failed dependency installation."
+                    }
                 }
             }
         }
@@ -36,17 +36,29 @@ pipeline {
                 stage('Unit Tests') {
                     steps {
                         script {
-                            echo 'Running unit tests...'
+                            try {
+                                echo 'Running unit tests...'
+                                sh 'npm test'
+                            } catch (err) {
+                                echo 'Unit tests failed!'
+                                currentBuild.result = 'FAILURE'
+                                error "Aborting build due to failed unit tests."
+                            }
                         }
-                        sh 'npm test'
                     }
                 }
                 stage('Linting') {
                     steps {
                         script {
-                            echo 'Running code linting...'
+                            try {
+                                echo 'Running code linting...'
+                                sh 'npm run lint'
+                            } catch (err) {
+                                echo 'Linting failed!'
+                                currentBuild.result = 'FAILURE'
+                                error "Aborting build due to failed linting."
+                            }
                         }
-                        sh 'npm run lint'
                     }
                 }
             }
@@ -56,13 +68,17 @@ pipeline {
         stage('Build and Package') {
             steps {
                 script {
-                    echo 'Building Docker image...'
-                    sh 'docker build -t ${DOCKER_IMAGE} .'
-                }
-                script {
-                    echo 'Pushing Docker image to registry...'
-                    sh "docker tag ${DOCKER_IMAGE} ${DOCKER_REGISTRY}:${BUILD_NUMBER}"
-                    sh "docker push ${DOCKER_REGISTRY}:${BUILD_NUMBER}"
+                    try {
+                        echo 'Building Docker image...'
+                        sh 'docker build -t ${DOCKER_IMAGE} .'
+                        echo 'Pushing Docker image to registry...'
+                        sh "docker tag ${DOCKER_IMAGE} ${DOCKER_REGISTRY}:${BUILD_NUMBER}"
+                        sh "docker push ${DOCKER_REGISTRY}:${BUILD_NUMBER}"
+                    } catch (err) {
+                        echo 'Docker build or push failed!'
+                        currentBuild.result = 'FAILURE'
+                        error "Aborting build due to Docker image build/push failure."
+                    }
                 }
             }
         }
@@ -74,8 +90,14 @@ pipeline {
             }
             steps {
                 script {
-                    echo 'Deploying to staging...'
-                    sh "docker run -d -e NODE_ENV=staging -p 3000:3000 ${DOCKER_REGISTRY}:${BUILD_NUMBER}"
+                    try {
+                        echo 'Deploying to staging...'
+                        sh "docker run -d -e NODE_ENV=staging -p 3000:3000 ${DOCKER_REGISTRY}:${BUILD_NUMBER}"
+                    } catch (err) {
+                        echo 'Failed to deploy to staging!'
+                        currentBuild.result = 'FAILURE'
+                        error "Aborting build due to failed staging deployment."
+                    }
                 }
             }
         }
@@ -94,37 +116,70 @@ pipeline {
             }
             steps {
                 script {
-                    echo 'Deploying to production...'
-                    sh "docker run -d -e NODE_ENV=production -p 80:3000 ${DOCKER_REGISTRY}:${BUILD_NUMBER}"
+                    try {
+                        echo 'Deploying to production...'
+                        sh "docker run -d -e NODE_ENV=production -p 80:3000 ${DOCKER_REGISTRY}:${BUILD_NUMBER}"
+                    } catch (err) {
+                        echo 'Failed to deploy to production!'
+                        currentBuild.result = 'FAILURE'
+                        error "Aborting build due to failed production deployment."
+                    }
                 }
             }
         }
     }
 
     post {
-        success {
-            echo 'Build and deployment succeeded!'
-            // Slack notification for success
-            slackSend(channel: '#build-notifications', message: "SUCCESS: Build #${BUILD_NUMBER} was successful!")
-        }
+    success {
+        echo 'Build and deployment succeeded!'
+        // Send email notification for success
+        mail to: 'your-email@example.com',
+             subject: "SUCCESS: Build #${BUILD_NUMBER} was successful!",
+             body: """The Jenkins build and deployment succeeded.
+                     
+                     Project: ${JOB_NAME}
+                     Build Number: ${BUILD_NUMBER}
+                     Build URL: ${BUILD_URL}
+                     
+                     Please check the application in production.
+                  """
+    }
 
-        failure {
-            echo 'Build failed!'
-            // Slack notification for failure
-            slackSend(channel: '#build-notifications', message: "FAILED: Build #${BUILD_NUMBER} failed!")
-            
+    failure {
+        echo 'Build failed!'
+        // Send email notification for failure
+        mail to: 'your-email@example.com',
+             subject: "FAILED: Build #${BUILD_NUMBER} failed!",
+             body: """The Jenkins build failed.
+
+                     Project: ${JOB_NAME}
+                     Build Number: ${BUILD_NUMBER}
+                     Build URL: ${BUILD_URL}
+
+                     Please investigate the issue.
+                  """
+    
             // Rollback to previous stable version in production
             script {
-                echo 'Rolling back to the previous version...'
-                sh "docker run -d -e NODE_ENV=production -p 80:3000 ${DOCKER_REGISTRY}:previous-stable-version"
+                try {
+                    echo 'Rolling back to the previous version...'
+                    sh "docker run -d -e NODE_ENV=production -p 80:3000 ${DOCKER_REGISTRY}:previous-stable-version"
+                } catch (err) {
+                    echo 'Rollback failed!'
+                    error "Rollback to previous version failed. Manual intervention needed."
+                }
             }
         }
 
         always {
             // Clean up Docker images to prevent storage issues
             script {
-                echo 'Cleaning up Docker images...'
-                sh 'docker system prune -f'
+                try {
+                    echo 'Cleaning up Docker images...'
+                    sh 'docker system prune -f'
+                } catch (err) {
+                    echo 'Docker image cleanup failed!'
+                }
             }
         }
     }
